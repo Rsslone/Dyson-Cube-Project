@@ -1,0 +1,135 @@
+package com.refitbench.dysoncubeproject.client;
+
+import com.refitbench.dysoncubeproject.Reference;
+import net.minecraft.client.Minecraft;
+import net.minecraft.util.ResourceLocation;
+import org.apache.commons.io.IOUtils;
+import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL20;
+
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.FloatBuffer;
+import org.lwjgl.BufferUtils;
+
+/**
+ * Manages OpenGL shader programs for custom rendering effects.
+ * In 1.12.2 there's no ShaderInstance; we compile and link raw GLSL.
+ */
+public class DCPShaderHelper {
+
+    private final int programId;
+
+    private DCPShaderHelper(int programId) {
+        this.programId = programId;
+    }
+
+    public static DCPShaderHelper load(String name) {
+        try {
+            String basePath = "assets/" + Reference.MOD_ID + "/shaders/core/";
+            String vshSource = readResource(basePath + name + ".vsh");
+            String fshSource = readResource(basePath + name + ".fsh");
+
+            int vsh = compileShader(GL20.GL_VERTEX_SHADER, vshSource, name + ".vsh");
+            int fsh = compileShader(GL20.GL_FRAGMENT_SHADER, fshSource, name + ".fsh");
+
+            int program = GL20.glCreateProgram();
+            GL20.glAttachShader(program, vsh);
+            GL20.glAttachShader(program, fsh);
+
+            // Bind attribute locations to match the vertex format
+            GL20.glBindAttribLocation(program, 0, "Position");
+            GL20.glBindAttribLocation(program, 1, "Color");
+
+            GL20.glLinkProgram(program);
+            if (GL20.glGetProgrami(program, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
+                String log = GL20.glGetProgramInfoLog(program, 8192);
+                GL20.glDeleteProgram(program);
+                GL20.glDeleteShader(vsh);
+                GL20.glDeleteShader(fsh);
+                System.err.println("[DysonCubeProject] Shader link failed for " + name + ": " + log);
+                return null;
+            }
+
+            // Shaders can be detached after linking
+            GL20.glDetachShader(program, vsh);
+            GL20.glDetachShader(program, fsh);
+            GL20.glDeleteShader(vsh);
+            GL20.glDeleteShader(fsh);
+
+            return new DCPShaderHelper(program);
+        } catch (Exception e) {
+            System.err.println("[DysonCubeProject] Failed to load shader: " + name);
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    private static int compileShader(int type, String source, String name) {
+        int shader = GL20.glCreateShader(type);
+        GL20.glShaderSource(shader, source);
+        GL20.glCompileShader(shader);
+        if (GL20.glGetShaderi(shader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
+            String log = GL20.glGetShaderInfoLog(shader, 8192);
+            GL20.glDeleteShader(shader);
+            throw new RuntimeException("Shader compile error in " + name + ": " + log);
+        }
+        return shader;
+    }
+
+    private static String readResource(String path) throws Exception {
+        try (InputStream is = Minecraft.getMinecraft().getResourceManager()
+                .getResource(new ResourceLocation(Reference.MOD_ID,
+                        "shaders/core/" + path.substring(path.lastIndexOf('/') + 1)))
+                .getInputStream()) {
+            return IOUtils.toString(is, StandardCharsets.UTF_8);
+        }
+    }
+
+    public void bind() {
+        GL20.glUseProgram(programId);
+    }
+
+    public static void unbind() {
+        GL20.glUseProgram(0);
+    }
+
+    public int getUniformLocation(String name) {
+        return GL20.glGetUniformLocation(programId, name);
+    }
+
+    public void setUniform1f(String name, float value) {
+        int loc = getUniformLocation(name);
+        if (loc >= 0) GL20.glUniform1f(loc, value);
+    }
+
+    public void setUniform3f(String name, float x, float y, float z) {
+        int loc = getUniformLocation(name);
+        if (loc >= 0) GL20.glUniform3f(loc, x, y, z);
+    }
+
+    public void setUniformMatrix4(String name, FloatBuffer matrix) {
+        int loc = getUniformLocation(name);
+        if (loc >= 0) GL20.glUniformMatrix4(loc, false, matrix);
+    }
+
+    /**
+     * Uploads the current GL ModelView and Projection matrices as uniforms.
+     */
+    public void uploadMatrices() {
+        FloatBuffer buf = BufferUtils.createFloatBuffer(16);
+        GL11.glGetFloat(GL11.GL_MODELVIEW_MATRIX, buf);
+        setUniformMatrix4("ModelViewMat", buf);
+        buf.clear();
+        GL11.glGetFloat(GL11.GL_PROJECTION_MATRIX, buf);
+        setUniformMatrix4("ProjMat", buf);
+    }
+
+    public int getProgramId() {
+        return programId;
+    }
+
+    public void delete() {
+        GL20.glDeleteProgram(programId);
+    }
+}
